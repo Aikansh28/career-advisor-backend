@@ -1,0 +1,10 @@
+venv/ 
+__pycache__/ 
+*.pyc 
+.env 
+*.json 
+jupyter_nb/ 
+notebooks/ 
+test_*.py 
+**/test_*.py 
+**/__pycache__/ 
