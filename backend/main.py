@@ -31,9 +31,14 @@ from sentence_transformers import SentenceTransformer
 import torch
 
 # Load Hugging Face embedding model once at startup
+# Load Hugging Face embedding model once at startup
 print("📦 Loading Hugging Face embedding model...")
-embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-print("✅ Embedding model loaded successfully!")
+try:
+    embedding_model = SentenceTransformer('paraphrase-MiniLM-L3-v2')  # ← Changed this
+    print("✅ Embedding model loaded successfully!")
+except Exception as e:
+    print(f"❌ Error loading embedding model: {e}")
+    embedding_model = None
 
 
 
