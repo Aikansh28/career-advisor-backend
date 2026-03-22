@@ -1,9 +1,8 @@
-# Replace ENTIRE file with this:
-
 import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import pickle
+import os
 
 def generate_embeddings():
     """Generate embeddings using Hugging Face model"""
@@ -15,9 +14,20 @@ def generate_embeddings():
     model = SentenceTransformer('all-MiniLM-L6-v2')
     print("✅ Model loaded!")
     
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Build path to CSV file
+    csv_path = os.path.join(script_dir, "..", "data", "careers_updated_with_embeddings_text.csv")
+    
+    # Check if file exists
+    if not os.path.exists(csv_path):
+        print(f"❌ ERROR: File not found at: {csv_path}")
+        print(f"📂 Current directory: {os.getcwd()}")
+        print(f"📂 Script directory: {script_dir}")
+        return
+    
     # Load careers CSV
-# In generate_embeddings.py line 21:
-    csv_path = "../data/careers_updated_with_embeddings_text.csv"
     print(f"📂 Loading careers from {csv_path}...")
     df = pd.read_csv(csv_path)
     print(f"✅ Loaded {len(df)} careers")
@@ -38,8 +48,8 @@ def generate_embeddings():
     # Add embeddings to dataframe
     df['career_vector'] = embeddings
     
-    # Save to pickle
-    output_path = "careers_final_with_embeddings.pkl"
+    # Save to pickle in the same directory as the script
+    output_path = os.path.join(script_dir, "careers_final_with_embeddings.pkl")
     df.to_pickle(output_path)
     print(f"✅ Saved embeddings to {output_path}")
     

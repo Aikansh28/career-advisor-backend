@@ -13,7 +13,7 @@ import io
 import requests
 from sentence_transformers import SentenceTransformer
 import pickle
-
+import torch
 
 # -------------------------
 # Schemas (inline - no separate import needed)
@@ -25,23 +25,14 @@ class StudentProfile(BaseModel):
     subjects: Optional[List[str]] = []
     goals: Optional[str] = ""
 
-
-# NEW CODE - ADD THIS:
-from sentence_transformers import SentenceTransformer
-import torch
-
-# Load Hugging Face embedding model once at startup
 # Load Hugging Face embedding model once at startup
 print("📦 Loading Hugging Face embedding model...")
 try:
-    embedding_model = SentenceTransformer('paraphrase-MiniLM-L3-v2')  # ← Changed this
+    embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
     print("✅ Embedding model loaded successfully!")
 except Exception as e:
     print(f"❌ Error loading embedding model: {e}")
     embedding_model = None
-
-
-
 # -------------------------
 # Load careers from local
 # -------------------------
@@ -104,9 +95,103 @@ app.add_middleware(
 # -------------------------
 # Helper functions
 # -------------------------
+def filter_careers_by_education(student_education: str, careers_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Filter careers based on education level hierarchy.
+    Returns careers that require the student's education level or lower.
+    """
+    if not student_education or careers_df.empty:
+        return careers_df
+
+    # Define education hierarchy (lower index = lower requirement)
+    # Adjust these keys to match exactly what your frontend sends
+    education_levels = {
+        "high-school": 1,
+        "associate": 2,
+        "bachelor": 3,
+        "master": 4,
+        "phd": 5
+    }
+    
+    # Map CSV 'minimum_elligibilty' values to our hierarchy levels
+    # You might need to expand this mapping based on your actual CSV data content
+    csv_education_mapping = {
+        "10+2": 1, 
+        "High School": 1,
+        "Diploma": 2, 
+        "Associate": 2,
+        "Bachelor": 3, 
+        "B.Tech": 3, 
+        "B.E.": 3, 
+        "B.Com": 3, 
+        "B.Sc": 3, 
+        "BBA": 3, 
+        "BCA": 3,
+        "Master": 4, 
+        "M.Tech": 4, 
+        "MBA": 4, 
+        "MCA": 4, 
+        "M.Com": 4, 
+        "M.Sc": 4,
+        "PhD": 5, 
+        "Doctorate": 5
+    }
+
+    student_level = education_levels.get(student_education.lower(), 0)
+    
+    # If student level is unknown, return all careers
+    if student_level == 0:
+        return careers_df
+
+    def check_eligibility(eligibility_text):
+        if not isinstance(eligibility_text, str):
+            return True # Keep if data is missing
+            
+        # Check if any keyword in the eligibility text matches a level <= student_level
+        # This is a simple keyword matching heuristic
+        required_level = 100 # Default to high req if no match found
+        
+        # simplified logic: look for the highest mentioned degree in the text
+        # and see if it's <= student's level. 
+        # Actually, for filtering, we want to KEEP jobs where 
+        # required_level <= student_level
+        
+        found_level = 0
+        text_lower = eligibility_text.lower()
+        
+        if "phd" in text_lower or "doctorate" in text_lower:
+            found_level = 5
+        elif "master" in text_lower or "mba" in text_lower or "m.tech" in text_lower:
+            found_level = 4
+        elif "bachelor" in text_lower or "degree" in text_lower or "b.tech" in text_lower or "b.e." in text_lower:
+            found_level = 3
+        elif "associate" in text_lower or "diploma" in text_lower:
+            found_level = 2
+        elif "high school" in text_lower or "12th" in text_lower:
+            found_level = 1
+        else:
+            # If we align with "Bachelor's degree in..." text
+            found_level = 3 # Assume bachelor if unspecified for professional jobs
+            
+        return found_level <= student_level
+
+    # Apply filter using the specific column name from your CSV
+    # Note: Using 'minimum_elligibilty' as requested (sic)
+    filtered_df = careers_df[careers_df['minimum_elligibilty'].apply(check_eligibility)]
+    
+    print(f"   📉 Filtered careers from {len(careers_df)} to {len(filtered_df)} based on education level {student_level}")
+    
+    return filtered_df
+
 def embed_student_profile(profile: StudentProfile):
     """Generate embedding for student profile using Hugging Face"""
     try:
+        if embedding_model is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Embedding model not loaded"
+            )
+        
         # Build text representation
         text_input = (
             f"Education: {profile.education}. "
@@ -116,7 +201,7 @@ def embed_student_profile(profile: StudentProfile):
             f"Goals: {profile.goals if profile.goals else 'Not specified'}"
         )
         
-        print(f"   🔄 Generating embedding for: {text_input[:100]}...")
+        print(f"   🔄 Generating embedding locally...")
         
         # Generate embedding using local model (NO API CALL!)
         embedding = embedding_model.encode(text_input, convert_to_numpy=True)
@@ -132,14 +217,23 @@ def embed_student_profile(profile: StudentProfile):
             detail=f"Failed to generate student profile embedding: {str(e)}"
         )
 
-def match_careers(student_vector: np.ndarray, top_k: int = 3):
+def match_careers(student_vector: np.ndarray, student_education: str = "", top_k: int = 3):
     """Compare student vector with career vectors using cosine similarity."""
     try:
         if careers.empty:
             raise ValueError("Career database not loaded")
         
+        # Apply strict education filter first
+        print(f"   🔍 Applying education filter for: '{student_education}'")
+        candidate_careers = filter_careers_by_education(student_education, careers)
+        
+        # Fallback if filter removes everything
+        if candidate_careers.empty:
+            print("   ⚠️  Filter removed all careers! Falling back to full database.")
+            candidate_careers = careers
+
         # Get embedding dimension from careers
-        expected_dim = len(careers["career_vector"].iloc[0])
+        expected_dim = len(candidate_careers["career_vector"].iloc[0])
         
         print(f"   📊 Student vector: {len(student_vector)}D, Career vectors: {expected_dim}D")
         
@@ -157,14 +251,14 @@ def match_careers(student_vector: np.ndarray, top_k: int = 3):
                 # Truncate
                 student_vector = student_vector[:expected_dim]
         
-        print(f"   🔍 Matching against {len(careers)} careers...")
+        print(f"   🔍 Matching against {len(candidate_careers)} careers...")
         
         # Calculate cosine similarity
-        career_vectors_array = np.vstack(careers["career_vector"].to_numpy())
+        career_vectors_array = np.vstack(candidate_careers["career_vector"].to_numpy())
         sims = cosine_similarity([student_vector], career_vectors_array)
         
         # Add similarity scores
-        careers_copy = careers.copy()
+        careers_copy = candidate_careers.copy()
         careers_copy["similarity"] = sims[0]
         
         # Sort and return top matches
@@ -328,7 +422,7 @@ def recommend_career(profile: StudentProfile):
                    profile.subjects, profile.goals]):
             raise HTTPException(
                 status_code=400,
-                detail="Please provide at least one profile field (education, skills, interests, subjects, or goals)"
+                detail="Please provide at least profile.education, one profile field (education, skills, interests, subjects, or goals)"
             )
 
         # Step 1: Generate student embedding
